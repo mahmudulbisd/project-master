@@ -23,7 +23,7 @@ app.use(express.json());
 const JWT_SECRET = process.env.JWT_SECRET || 'pm_super_secret_123';
 const MONGO_URI = process.env.MONGO_URI;
 
-// স্কিমা ডিফিনিশন (ফাংশনের বাইরে একবারই হবে)
+// --- স্কিমা সমূহ ---
 const UserSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, unique: true, required: true },
@@ -42,6 +42,30 @@ const TaskSchema = new mongoose.Schema({
   createdBy: String,
   assignedTo: String,
   docLink: String,
+  file: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const ClientSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: String,
+  address: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const InvoiceSchema = new mongoose.Schema({
+  invoiceNumber: String,
+  date: String,
+  dueDate: String,
+  billFrom: String,
+  billTo: String,
+  items: Array,
+  subtotal: Number,
+  taxRate: Number,
+  taxAmount: Number,
+  total: Number,
+  notes: String,
+  status: { type: String, default: 'unpaid' },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -51,34 +75,43 @@ const QuickLinkSchema = new mongoose.Schema({
   description: String
 });
 
-// মডেল তৈরি বা বিদ্যমান মডেল ব্যবহার
-const User = mongoose.models.User || mongoose.model('User', UserSchema);
-const Task = mongoose.models.Task || mongoose.model('Task', TaskSchema);
-const QuickLink = mongoose.models.QuickLink || mongoose.model('QuickLink', QuickLinkSchema);
+// মডেল এক্সেস ফাংশন (Serverless context এ নিরাপদ)
+const getModels = () => {
+  return {
+    User: mongoose.models.User || mongoose.model('User', UserSchema),
+    Task: mongoose.models.Task || mongoose.model('Task', TaskSchema),
+    Client: mongoose.models.Client || mongoose.model('Client', ClientSchema),
+    Invoice: mongoose.models.Invoice || mongoose.model('Invoice', InvoiceSchema),
+    QuickLink: mongoose.models.QuickLink || mongoose.model('QuickLink', QuickLinkSchema)
+  };
+};
 
-// কানেকশন ক্যাশ
-let isConnected = false;
+// ডাটাবেজ কানেকশন ক্যাশ
+let cachedDb = null;
 
 async function connectToDatabase() {
-  if (isConnected && mongoose.connection.readyState === 1) {
-    return;
-  }
+  if (cachedDb && mongoose.connection.readyState === 1) return cachedDb;
 
   if (!MONGO_URI) {
-    console.error('❌ MONGO_URI missing');
-    throw new Error('Database URI missing');
+    throw new Error('MONGO_URI is missing. Please add it to Vercel Environment Variables.');
   }
 
   try {
-    await mongoose.connect(MONGO_URI, {
-      serverSelectionTimeoutMS: 10000,
-    });
-    isConnected = true;
-    console.log('✅ MongoDB Connected');
-    
-    // সিড অ্যাডমিন ইউজার
+    // কানেকশন অপশন
+    const opts = {
+      serverSelectionTimeoutMS: 15000,
+      bufferCommands: false,
+    };
+
+    const db = await mongoose.connect(MONGO_URI, opts);
+    cachedDb = db;
+    console.log('✅ MongoDB Connected Successfully');
+
+    // অ্যাডমিন ইউজার চেক ও তৈরি (Seed)
+    const { User } = getModels();
     const adminEmail = 'mahmudul.bisd@gmail.com';
     const existingAdmin = await User.findOne({ email: adminEmail });
+    
     if (!existingAdmin) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash('Admin#Mh2025!', salt);
@@ -90,26 +123,30 @@ async function connectToDatabase() {
         status: 'active'
       });
       await newAdmin.save();
+      console.log('✅ Default Admin User Created');
     }
-  } catch (e) {
-    console.error('❌ DB Connection Error:', e.message);
-    throw e;
+
+    return db;
+  } catch (error) {
+    console.error('❌ Database Connection Error:', error.message);
+    throw error;
   }
 }
 
-// মিডলওয়্যার: ডাটাবেজ চেক
+// মিডলওয়্যার
 const dbCheck = async (req, res, next) => {
   try {
     await connectToDatabase();
     next();
   } catch (error) {
-    res.status(503).json({ 
-      msg: 'Database connection failed. Check your MONGO_URI and IP whitelist in MongoDB Atlas.' 
+    res.status(500).json({ 
+      msg: 'Database error', 
+      detail: error.message,
+      hint: 'Check if MONGO_URI is correct and IP 0.0.0.0/0 is whitelisted in MongoDB Atlas.'
     });
   }
 };
 
-// মিডলওয়্যার: অথেন্টিকেশন
 const auth = (req, res, next) => {
   const token = req.header('x-auth-token');
   if (!token) return res.status(401).json({ msg: 'No token, authorization denied' });
@@ -118,43 +155,68 @@ const auth = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (e) {
-    res.status(401).json({ msg: 'Token is not valid' });
+    res.status(401).json({ msg: 'Token is invalid' });
   }
 };
 
 // --- API Endpoints ---
 
-// হেলথ চেক
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
-
-app.post('/api/auth/register', dbCheck, async (req, res) => {
+app.get('/api/health', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-    let user = await User.findOne({ email });
-    if (user) return res.status(400).json({ msg: 'User already exists' });
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    user = new User({ name, email, password: hashedPassword });
-    await user.save();
-    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
-  } catch (e) { res.status(500).json({ msg: e.message }); }
+    await connectToDatabase();
+    res.json({ status: 'ok', db: 'connected' });
+  } catch (e) {
+    res.status(500).json({ status: 'error', detail: e.message });
+  }
 });
 
 app.post('/api/auth/login', dbCheck, async (req, res) => {
   try {
+    const { User } = getModels();
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ msg: 'User not found' });
+    if (!user) return res.status(400).json({ msg: 'ইউজার খুঁজে পাওয়া যায়নি!' });
+    
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
+    if (!isMatch) return res.status(400).json({ msg: 'ভুল পাসওয়ার্ড!' });
+    
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
-  } catch (e) { res.status(500).json({ msg: e.message }); }
+    res.json({ 
+      token, 
+      user: { id: user._id, name: user.name, email: user.email, role: user.role } 
+    });
+  } catch (e) {
+    res.status(500).json({ msg: 'সার্ভার এরর', error: e.message });
+  }
 });
 
+app.post('/api/auth/register', dbCheck, async (req, res) => {
+  try {
+    const { User } = getModels();
+    const { name, email, password } = req.body;
+    let user = await User.findOne({ email });
+    if (user) return res.status(400).json({ msg: 'এই ইমেইল দিয়ে অলরেডি একাউন্ট আছে!' });
+    
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    
+    user = new User({ name, email, password: hashedPassword });
+    await user.save();
+    
+    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ 
+      token, 
+      user: { id: user._id, name: user.name, email: user.email, role: user.role } 
+    });
+  } catch (e) {
+    res.status(500).json({ msg: 'রেজিস্ট্রেশন এরর', error: e.message });
+  }
+});
+
+// টাস্ক এপিআই
 app.get('/api/tasks', auth, dbCheck, async (req, res) => {
   try {
+    const { Task } = getModels();
     const tasks = await Task.find().sort({ createdAt: -1 });
     res.json(tasks);
   } catch (e) { res.status(500).json({ msg: e.message }); }
@@ -162,23 +224,37 @@ app.get('/api/tasks', auth, dbCheck, async (req, res) => {
 
 app.post('/api/tasks', auth, dbCheck, async (req, res) => {
   try {
+    const { Task } = getModels();
     const task = new Task({ ...req.body, createdBy: req.user.id });
     await task.save();
     res.json(task);
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-app.get('/api/users', auth, dbCheck, async (req, res) => {
+// কুইক লিঙ্ক এপিআই
+app.get('/api/quicklinks', auth, dbCheck, async (req, res) => {
   try {
-    const users = await User.find({}, 'name email role status');
-    res.json(users);
+    const { QuickLink } = getModels();
+    const links = await QuickLink.find();
+    res.json(links);
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-app.get('/api/quicklinks', auth, dbCheck, async (req, res) => {
+// ইনভয়েস এপিআই
+app.get('/api/invoices', auth, dbCheck, async (req, res) => {
   try {
-    const links = await QuickLink.find();
-    res.json(links);
+    const { Invoice } = getModels();
+    const invoices = await Invoice.find().sort({ createdAt: -1 });
+    res.json(invoices);
+  } catch (e) { res.status(500).json({ msg: e.message }); }
+});
+
+// ইউজার এপিআই
+app.get('/api/users', auth, dbCheck, async (req, res) => {
+  try {
+    const { User } = getModels();
+    const users = await User.find({}, 'name email role status');
+    res.json(users);
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
