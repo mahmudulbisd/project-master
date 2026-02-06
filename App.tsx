@@ -41,7 +41,7 @@ const App: React.FC = () => {
 
   const t = translations[lang];
 
-  // Improved API Wrapper with robust error handling
+  // Robust API Wrapper
   const apiCall = async (endpoint: string, method: string = 'GET', body: any = null) => {
     try {
       const headers: any = { 'Content-Type': 'application/json' };
@@ -52,26 +52,32 @@ const App: React.FC = () => {
         headers,
         body: body ? JSON.stringify(body) : null
       });
+
+      const text = await response.text();
+      let data = null;
+
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (e) {
+        console.error("Non-JSON Response received:", text);
+        if (response.status >= 500) {
+          throw new Error(lang === 'bn' 
+            ? 'সার্ভার এরর! সম্ভবত MongoDB কানেক্ট হতে পারছে না। Vercel-এ MONGO_URI থেকে ব্র্যাকেট < > সরিয়ে শুধু পাসওয়ার্ড দিন।' 
+            : 'Server Error! MongoDB might not be connecting. Check MONGO_URI in Vercel and remove < > from password.');
+        }
+        throw new Error(lang === 'bn' ? 'সার্ভার থেকে ভুল রেসপন্স এসেছে।' : 'Unexpected response from server.');
+      }
       
       if (response.status === 401) {
         handleLogout();
         return null;
       }
-      
-      const contentType = response.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.msg || 'API Error');
-        return data;
-      } else {
-        // If not JSON, it's likely a 504/500 HTML error from Vercel/Server
-        if (response.status === 504 || response.status === 500) {
-          throw new Error(lang === 'bn' 
-            ? 'সার্ভার রেসপন্স করছে না। সম্ভবত MongoDB কানেক্ট করা হয়নি। Vercel-এ MONGO_URI চেক করুন।' 
-            : 'Server not responding. MongoDB might not be connected. Please check MONGO_URI in Vercel.');
-        }
-        throw new Error(`Unexpected response: ${response.status}`);
+
+      if (!response.ok) {
+        throw new Error(data?.msg || `Error ${response.status}`);
       }
+      
+      return data;
     } catch (error: any) {
       console.error("API Call failed:", error);
       throw error;
@@ -96,10 +102,10 @@ const App: React.FC = () => {
     try {
       setIsLoading(true);
       const [tasksData, invoicesData, linksData, usersData] = await Promise.all([
-        apiCall('/tasks'),
-        apiCall('/invoices'),
-        apiCall('/quicklinks'),
-        apiCall('/users')
+        apiCall('/tasks').catch(() => []),
+        apiCall('/invoices').catch(() => []),
+        apiCall('/quicklinks').catch(() => []),
+        apiCall('/users').catch(() => [])
       ]);
       setTasks(tasksData || []);
       setInvoices(invoicesData || []);
@@ -158,8 +164,10 @@ const App: React.FC = () => {
   const handleAddTask = async (taskData: any) => {
     try {
       const newTask = await apiCall('/tasks', 'POST', taskData);
-      setTasks([newTask, ...tasks]);
-      setIsTaskModalOpen(false);
+      if (newTask) {
+        setTasks([newTask, ...tasks]);
+        setIsTaskModalOpen(false);
+      }
     } catch (e: any) { alert(e.message); }
   };
 
@@ -167,16 +175,20 @@ const App: React.FC = () => {
     try {
       const id = taskData._id || taskData.id;
       const updated = await apiCall(`/tasks/${id}`, 'PUT', taskData);
-      setTasks(tasks.map(t => (t.id === updated.id || t._id === updated._id) ? updated : t));
-      setIsTaskModalOpen(false);
+      if (updated) {
+        setTasks(tasks.map(t => (t.id === updated.id || t._id === updated._id) ? updated : t));
+        setIsTaskModalOpen(false);
+      }
     } catch (e: any) { alert(e.message); }
   };
 
   const handleAddQuickLink = async (linkData: Omit<QuickLink, 'id'>) => {
     try {
       const newLink = await apiCall('/quicklinks', 'POST', linkData);
-      setLinks([newLink, ...links]);
-      setIsQuickLinkModalOpen(false);
+      if (newLink) {
+        setLinks([newLink, ...links]);
+        setIsQuickLinkModalOpen(false);
+      }
     } catch (e: any) { alert(e.message); }
   };
 

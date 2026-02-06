@@ -1,7 +1,7 @@
 
 /**
  * প্রজেক্ট মাস্টার ব্যাকএন্ড - Express.js + MongoDB
- * Vercel Deployment Ready
+ * Vercel Serverless Optimized
  */
 const express = require('express');
 const mongoose = require('mongoose');
@@ -10,19 +10,44 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const app = express();
 
-// CORS কনফিগারেশন
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'pm_super_secret_123';
 const MONGO_URI = process.env.MONGO_URI;
 
-// Disable mongoose command buffering to avoid hanging when disconnected
-mongoose.set('bufferCommands', false);
+// কানেকশন ক্যাশ করার জন্য গ্লোবাল ভ্যারিয়েবল
+let cachedDb = null;
 
-if (!MONGO_URI) {
-  console.error('❌ মঙ্গোডিবি ইউআরআই (MONGO_URI) এনভায়রনমেন্ট ভ্যারিয়েবলে সেট করা নেই!');
+async function connectToDatabase() {
+  if (cachedDb && mongoose.connection.readyState === 1) {
+    return cachedDb;
+  }
+
+  if (!MONGO_URI) {
+    throw new Error('MONGO_URI is missing in environment variables');
+  }
+
+  // Serverless optimization
+  mongoose.set('bufferCommands', false);
+
+  const opts = {
+    serverSelectionTimeoutMS: 15000, // ১৫ সেকেন্ড সময় দেওয়া হলো
+  };
+
+  try {
+    const db = await mongoose.connect(MONGO_URI, opts);
+    cachedDb = db;
+    console.log('✅ MongoDB Connected Successfully');
+    
+    // কানেক্ট হওয়ার পর একবারই সিডিং চেক করবে
+    await seedSpecificAdmin();
+    
+    return db;
+  } catch (e) {
+    console.error('❌ MongoDB Connection Error:', e.message);
+    throw e;
+  }
 }
 
 // --- স্কিমা সমূহ ---
@@ -68,21 +93,20 @@ const QuickLinkSchema = new mongoose.Schema({
   description: String
 });
 
-const User = mongoose.model('User', UserSchema);
-const Task = mongoose.model('Task', TaskSchema);
-const Invoice = mongoose.model('Invoice', InvoiceSchema);
-const QuickLink = mongoose.model('QuickLink', QuickLinkSchema);
+// মডেলে যাতে পুনরায় ডিক্লেয়ারেশন এরর না আসে
+const User = mongoose.models.User || mongoose.model('User', UserSchema);
+const Task = mongoose.models.Task || mongoose.model('Task', TaskSchema);
+const Invoice = mongoose.models.Invoice || mongoose.model('Invoice', InvoiceSchema);
+const QuickLink = mongoose.models.QuickLink || mongoose.model('QuickLink', QuickLinkSchema);
 
 // --- অটো-সিড অ্যাডমিন ইউজার ---
 const seedSpecificAdmin = async () => {
   try {
     const adminEmail = 'mahmudul.bisd@gmail.com';
     const existingAdmin = await User.findOne({ email: adminEmail });
-    
     if (!existingAdmin) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash('Admin#Mh2025!', salt);
-      
       const newAdmin = new User({
         name: 'Mahmudul Hasan',
         email: adminEmail,
@@ -90,51 +114,35 @@ const seedSpecificAdmin = async () => {
         role: 'admin',
         status: 'active'
       });
-      
       await newAdmin.save();
-      console.log('✅ অ্যাডমিন ইউজার (Mahmudul Hasan) তৈরি হয়েছে।');
+      console.log('✅ Admin user created/seeded');
     }
   } catch (error) {
-    console.error('❌ সিডিং এরর:', error);
+    console.error('❌ Seeding error:', error);
   }
 };
 
-// MongoDB কানেকশন
-let isConnected = false;
-if (MONGO_URI) {
-  mongoose.connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 5000 // 5 second timeout
-  })
-    .then(() => {
-      console.log('✅ MongoDB কানেকশন সফল');
-      isConnected = true;
-      seedSpecificAdmin();
-    })
-    .catch(err => {
-      console.error('❌ MongoDB কানেকশন এরর:', err);
-      isConnected = false;
-    });
-}
-
-// --- মিডলওয়্যার: ডেটাবেস চেক ---
-const dbCheck = (req, res, next) => {
-  if (!isConnected && mongoose.connection.readyState !== 1) {
-    return res.status(503).json({ 
-      msg: 'সার্ভার ডেটাবেসের সাথে কানেক্টেড নয়। দয়া করে MONGO_URI চেক করুন।' 
+// --- মিডলওয়্যার ---
+const dbCheck = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (error) {
+    res.status(503).json({ 
+      msg: 'Database connection failed. Please check MONGO_URI and Network Access settings in MongoDB Atlas.' 
     });
   }
-  next();
 };
 
 const auth = (req, res, next) => {
   const token = req.header('x-auth-token');
-  if (!token) return res.status(401).json({ msg: 'অথরাইজেশন টোকেন নেই' });
+  if (!token) return res.status(401).json({ msg: 'No auth token found' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
     next();
   } catch (e) {
-    res.status(400).json({ msg: 'টোকেন সঠিক নয়' });
+    res.status(400).json({ msg: 'Invalid token' });
   }
 };
 
@@ -143,7 +151,7 @@ app.post('/api/auth/register', dbCheck, async (req, res) => {
   try {
     const { name, email, password } = req.body;
     let user = await User.findOne({ email });
-    if (user) return res.status(400).json({ msg: 'ইউজার অলরেডি বিদ্যমান' });
+    if (user) return res.status(400).json({ msg: 'User already exists' });
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     user = new User({ name, email, password: hashedPassword });
@@ -157,9 +165,9 @@ app.post('/api/auth/login', dbCheck, async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ msg: 'ইউজার পাওয়া যায়নি' });
+    if (!user) return res.status(400).json({ msg: 'User not found' });
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ msg: 'ভুল পাসওয়ার্ড' });
+    if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -190,7 +198,7 @@ app.put('/api/tasks/:id', auth, dbCheck, async (req, res) => {
 app.delete('/api/tasks/:id', auth, dbCheck, async (req, res) => {
   try {
     await Task.findByIdAndDelete(req.params.id);
-    res.json({ msg: 'ডিলিট হয়েছে' });
+    res.json({ msg: 'Task deleted' });
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
@@ -212,7 +220,7 @@ app.post('/api/quicklinks', auth, dbCheck, async (req, res) => {
 app.delete('/api/quicklinks/:id', auth, dbCheck, async (req, res) => {
   try {
     await QuickLink.findByIdAndDelete(req.params.id);
-    res.json({ msg: 'ডিলিট হয়েছে' });
+    res.json({ msg: 'Link deleted' });
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
@@ -223,10 +231,4 @@ app.get('/api/users', auth, dbCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-// প্রোডাকশনের জন্য অ্যাপ এক্সপোর্ট
 module.exports = app;
-
-// লোকাল হোস্টে রান করার জন্য
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => console.log(`🚀 সার্ভার চলছে পোর্টে ${PORT}`));
-}
