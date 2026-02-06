@@ -2,12 +2,13 @@
 /**
  * প্রজেক্ট মাস্টার ব্যাকএন্ড - Express.js + MongoDB
  * Vercel Serverless Optimized (api/index.js)
+ * Syntax: ES Modules (import/export)
  */
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+import express from 'express';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 
 const app = express();
 
@@ -97,7 +98,6 @@ async function connectToDatabase() {
   }
 
   try {
-    // কানেকশন অপশন
     const opts = {
       serverSelectionTimeoutMS: 15000,
       bufferCommands: false,
@@ -213,7 +213,6 @@ app.post('/api/auth/register', dbCheck, async (req, res) => {
   }
 });
 
-// টাস্ক এপিআই
 app.get('/api/tasks', auth, dbCheck, async (req, res) => {
   try {
     const { Task } = getModels();
@@ -231,7 +230,6 @@ app.post('/api/tasks', auth, dbCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-// কুইক লিঙ্ক এপিআই
 app.get('/api/quicklinks', auth, dbCheck, async (req, res) => {
   try {
     const { QuickLink } = getModels();
@@ -240,7 +238,6 @@ app.get('/api/quicklinks', auth, dbCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-// ইনভয়েস এপিআই
 app.get('/api/invoices', auth, dbCheck, async (req, res) => {
   try {
     const { Invoice } = getModels();
@@ -249,7 +246,6 @@ app.get('/api/invoices', auth, dbCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-// ইউজার এপিআই
 app.get('/api/users', auth, dbCheck, async (req, res) => {
   try {
     const { User } = getModels();
@@ -258,4 +254,4 @@ app.get('/api/users', auth, dbCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ msg: e.message }); }
 });
 
-module.exports = app;
+export default app;
